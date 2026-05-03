@@ -1,55 +1,34 @@
-import os
-import uvicorn
+import os, uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 
 app = FastAPI()
-
-# This list tracks active browser connections (viewers)
 viewers = []
-
-@app.get("/")
-async def root():
-    return {"message": "Shadow Relay is Online"}
+broadcaster = None
 
 @app.websocket("/stream")
 async def stream_endpoint(websocket: WebSocket):
-    """
-    Shadow PC connects here to send video frames.
-    """
+    global broadcaster
     await websocket.accept()
-    print("[*] Shadow PC Linked to Relay.")
+    broadcaster = websocket
     try:
         while True:
-            # Receive JPEG bytes from the Shadow PC Broadcaster
-            data = await websocket.receive_bytes()
-            
-            # Instantly push those bytes to every connected viewer
-            for viewer in viewers:
-                try:
-                    await viewer.send_bytes(data)
-                except:
-                    # Remove broken viewer connections
-                    viewers.remove(viewer)
-    except WebSocketDisconnect:
-        print("[!] Shadow PC Disconnected.")
+            msg = await websocket.receive()
+            data = msg.get("bytes") or msg.get("text")
+            for v in viewers:
+                await (v.send_bytes(data) if isinstance(data, bytes) else v.send_text(data))
+    except WebSocketDisconnect: broadcaster = None
 
 @app.websocket("/view")
 async def view_endpoint(websocket: WebSocket):
-    """
-    Your Vercel Website connects here to receive video frames.
-    """
     await websocket.accept()
     viewers.append(websocket)
-    print(f"[*] New Viewer Connected. Total viewers: {len(viewers)}")
     try:
         while True:
-            # Keep the socket open by listening for 'ping'
-            await websocket.receive_text()
-    except WebSocketDisconnect:
-        viewers.remove(websocket)
-        print("[*] Viewer Disconnected.")
+            # Receive input from Website and send to Shadow PC
+            control_data = await websocket.receive_text()
+            if broadcaster:
+                await broadcaster.send_text(control_data)
+    except WebSocketDisconnect: viewers.remove(websocket)
 
 if __name__ == "__main__":
-    # Render assigns a dynamic port via the PORT environment variable
-    port = int(os.environ.get("PORT", 8000))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
